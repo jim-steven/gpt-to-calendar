@@ -387,6 +387,11 @@ app.get('/', (req, res) => {
   `);
 });
 
+// Add a privacy policy page
+app.get('/privacy-policy', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'privacy-policy.html'));
+});
+
 // Background worker to process pending events
 setInterval(async () => {
   try {
