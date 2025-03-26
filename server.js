@@ -14,7 +14,11 @@ const axios = require('axios');
 require("dotenv").config();
 
 // Define calendar constants
-const DEFAULT_CALENDAR_ID = '865d9be49c7fe3679063400a3796fcb5d38560d6c907e9bbbf77802bc646a4ac@group.calendar.google.com'; // Use the specific calendar ID
+const DEFAULT_CALENDAR_ID = '865d9be49c7fe3679063400a3796fcb5d38560d6c907e9bbbf77802bc646a4ac@group.calendar.google.com';
+const CALENDAR_SCOPES = [
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/calendar.events'
+];
 
 // Express app setup
 const app = express();
@@ -88,6 +92,43 @@ const logToConsole = (message, level = 'info') => {
   } else {
     console.log(logMessage);
   }
+};
+
+// Consolidated service account authentication
+const getServiceAccountAuth = () => {
+  try {
+    const keyFilePath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH || path.join(__dirname, 'service-account-key.json');
+    
+    // Read the key file directly and parse it
+    let credentials;
+    try {
+      const keyFileContent = fs.readFileSync(keyFilePath, 'utf8');
+      credentials = JSON.parse(keyFileContent);
+      console.log('Successfully loaded credentials from file');
+    } catch (readError) {
+      console.error('Error reading key file:', readError);
+      throw new Error('Could not read service account key file');
+    }
+    
+    // Create auth client directly with credentials
+    const auth = new google.auth.JWT(
+      credentials.client_email || credentials.web?.client_email,
+      null,
+      credentials.private_key || credentials.web?.private_key,
+      CALENDAR_SCOPES
+    );
+    
+    return auth;
+  } catch (error) {
+    console.error('Error initializing service account auth:', error);
+    throw error;
+  }
+};
+
+// Initialize calendar API client
+const getCalendarClient = () => {
+  const auth = getServiceAccountAuth();
+  return google.calendar({ version: 'v3', auth });
 };
 
 // Create a calendar event
@@ -302,20 +343,6 @@ app.get('/api/list-events', async (req, res) => {
   }
 });
 
-// Get service account auth client
-const getServiceAccountAuth = () => {
-  // Use environment variable for the path
-  const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH || './service-account-key.json';
-  const scopes = ['https://www.googleapis.com/auth/calendar'];
-
-  const auth = new google.auth.GoogleAuth({
-    keyFile,
-    scopes,
-  });
-
-  return auth.getClient();
-};
-
 // Add a health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).send('OK');
@@ -418,7 +445,7 @@ app.post('/api/move-event', async (req, res) => {
       calendarId = DEFAULT_CALENDAR_ID,
       eventId,
       destinationCalendarId,
-      sendUpdates = 'all' // 'all', 'externalOnly', or 'none'
+      sendUpdates = 'all'
     } = req.body;
     
     if (!eventId || !destinationCalendarId) {
@@ -436,103 +463,69 @@ app.post('/api/move-event', async (req, res) => {
       });
     }
     
-    // Try to use service account
+    const calendar = getCalendarClient();
+    
+    // First verify access to both calendars
     try {
-      const keyFilePath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH || path.join(__dirname, 'service-account-key.json');
-      
-      // Read the key file directly and parse it
-      let credentials;
-      try {
-        const keyFileContent = fs.readFileSync(keyFilePath, 'utf8');
-        credentials = JSON.parse(keyFileContent);
-        console.log('Successfully loaded credentials from file');
-      } catch (readError) {
-        console.error('Error reading key file:', readError);
-        throw new Error('Could not read service account key file');
-      }
-      
-      // Create auth client directly with credentials
-      const auth = new google.auth.JWT(
-        credentials.client_email || credentials.web?.client_email,
-        null,
-        credentials.private_key || credentials.web?.private_key,
-        ['https://www.googleapis.com/auth/calendar']
-      );
-      
-      // Initialize the calendar API with our authenticated client
-      const calendar = google.calendar({ version: 'v3', auth });
-      
-      // First verify the event exists in the source calendar
-      try {
-        await calendar.events.get({
-          calendarId,
-          eventId
-        });
-        console.log(`Event ${eventId} found in source calendar ${calendarId}`);
-      } catch (error) {
-        console.error(`Event ${eventId} not found in source calendar ${calendarId}:`, error.message);
-        return res.status(404).json({
-          error: 'Event not found',
-          message: `Event ${eventId} not found in source calendar ${calendarId}`
-        });
-      }
-
-      // Verify destination calendar exists and is accessible
-      try {
-        await calendar.calendars.get({
-          calendarId: destinationCalendarId
-        });
-        console.log(`Destination calendar ${destinationCalendarId} is accessible`);
-      } catch (error) {
-        console.error(`Destination calendar ${destinationCalendarId} not found or not accessible:`, error.message);
-        return res.status(404).json({
-          error: 'Destination calendar not found',
-          message: `Calendar ${destinationCalendarId} not found or not accessible. Please ensure the service account has access to this calendar.`
-        });
-      }
-      
-      console.log(`Attempting to move event ${eventId} from calendar ${calendarId} to ${destinationCalendarId}`);
-      
-      const response = await calendar.events.move({
-        calendarId,
-        eventId,
-        destination: destinationCalendarId,
-        sendUpdates
-      });
-      
-      console.log(`Successfully moved event ${eventId} to calendar ${destinationCalendarId}`);
-      
-      return res.status(200).json({ 
-        success: true,
-        message: 'Event moved successfully',
-        event: response.data
-      });
+      await calendar.calendars.get({ calendarId });
+      await calendar.calendars.get({ calendarId: destinationCalendarId });
     } catch (error) {
-      console.error('Calendar move access failed:', error);
-      
-      // Provide more specific error messages
       if (error.code === 404) {
         return res.status(404).json({
-          error: 'Resource not found',
-          message: 'Either the event or the destination calendar was not found. Please verify the IDs and permissions.'
-        });
-      } else if (error.code === 403) {
-        return res.status(403).json({
-          error: 'Permission denied',
-          message: 'Service account does not have permission to perform this operation. Please ensure the service account has access to both calendars.'
+          error: 'Calendar not found',
+          message: 'One or both calendars were not found. Please verify the calendar IDs.',
+          details: error.message
         });
       }
-      
-      return res.status(500).json({
-        error: 'Failed to move event',
-        message: error.message
+      if (error.code === 403) {
+        return res.status(403).json({
+          error: 'Permission denied',
+          message: 'Service account does not have access to one or both calendars. Please ensure the service account has the necessary permissions.',
+          details: error.message
+        });
+      }
+      throw error;
+    }
+    
+    console.log(`Moving event ${eventId} from calendar ${calendarId} to ${destinationCalendarId}`);
+    
+    const response = await calendar.events.move({
+      calendarId,
+      eventId,
+      destination: destinationCalendarId,
+      sendUpdates
+    });
+    
+    console.log(`Successfully moved event ${eventId} to calendar ${destinationCalendarId}`);
+    
+    return res.status(200).json({ 
+      success: true,
+      message: 'Event moved successfully',
+      event: response.data
+    });
+  } catch (error) {
+    console.error('Calendar move access failed:', error);
+    
+    // Provide more specific error messages
+    if (error.code === 404) {
+      return res.status(404).json({
+        error: 'Resource not found',
+        message: 'The event was not found. Please verify the event ID.',
+        details: error.message
       });
     }
-  } catch (error) {
-    console.error('Error in move-event endpoint:', error);
+    if (error.code === 403) {
+      return res.status(403).json({
+        error: 'Permission denied',
+        message: 'Service account does not have permission to move this event. Please ensure the service account has access to both calendars.',
+        details: error.message
+      });
+    }
+    
     return res.status(500).json({
-      error: 'Server error',
-      message: error.message
+      error: 'Failed to move event',
+      message: error.message,
+      details: error.stack
     });
   }
 });
@@ -540,77 +533,48 @@ app.post('/api/move-event', async (req, res) => {
 // List available calendars
 app.get('/api/list-calendars', async (req, res) => {
   try {
-    // Try to use service account
-    try {
-      const keyFilePath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH || path.join(__dirname, 'service-account-key.json');
-      
-      // Read the key file directly and parse it
-      let credentials;
-      try {
-        const keyFileContent = fs.readFileSync(keyFilePath, 'utf8');
-        credentials = JSON.parse(keyFileContent);
-        console.log('Successfully loaded credentials from file');
-      } catch (readError) {
-        console.error('Error reading key file:', readError);
-        throw new Error('Could not read service account key file');
-      }
-      
-      // Create auth client directly with credentials
-      const auth = new google.auth.JWT(
-        credentials.client_email || credentials.web?.client_email,
-        null,
-        credentials.private_key || credentials.web?.private_key,
-        ['https://www.googleapis.com/auth/calendar']
-      );
-      
-      // Initialize the calendar API with our authenticated client
-      const calendar = google.calendar({ version: 'v3', auth });
-      
-      console.log('Fetching list of available calendars');
-      
-      const response = await calendar.calendarList.list();
-      
-      // Format the response to include only relevant information
-      const calendars = response.data.items.map(cal => ({
-        id: cal.id,
-        summary: cal.summary,
-        description: cal.description || '',
-        location: cal.location || '',
-        timeZone: cal.timeZone,
-        accessRole: cal.accessRole,
-        backgroundColor: cal.backgroundColor,
-        foregroundColor: cal.foregroundColor,
-        selected: cal.selected,
-        primary: cal.primary || false
-      }));
-      
-      console.log(`Found ${calendars.length} calendars`);
-      
-      return res.status(200).json({ 
-        success: true,
-        calendars
-      });
-    } catch (error) {
-      console.error('Calendar list access failed:', error);
-      
-      // Provide more specific error messages
-      if (error.code === 403) {
-        return res.status(403).json({
-          error: 'Permission denied',
-          message: 'Service account does not have permission to list calendars. Please ensure the service account has the necessary permissions.'
-        });
-      }
-      
-      return res.status(500).json({
-        error: 'Failed to list calendars',
-        message: error.message
+    const calendar = getCalendarClient();
+    
+    console.log('Fetching list of available calendars');
+    
+    const response = await calendar.calendarList.list();
+    
+    // Format the response to include only relevant information
+    const calendars = response.data.items.map(cal => ({
+      id: cal.id,
+      summary: cal.summary,
+      description: cal.description || '',
+      location: cal.location || '',
+      timeZone: cal.timeZone,
+      accessRole: cal.accessRole,
+      backgroundColor: cal.backgroundColor,
+      foregroundColor: cal.foregroundColor,
+      selected: cal.selected,
+      primary: cal.primary || false
+    }));
+    
+    console.log(`Found ${calendars.length} calendars`);
+    
+    return res.status(200).json({ 
+      success: true,
+      calendars
+    });
+  } catch (error) {
+    console.error('Calendar list access failed:', error);
+    
+    // Provide more specific error messages
+    if (error.code === 403) {
+      return res.status(403).json({
+        error: 'Permission denied',
+        message: 'Service account does not have permission to list calendars. Please ensure the service account has the necessary permissions.',
+        details: error.message
       });
     }
-  } catch (error) {
-    console.error('Error in list-calendars endpoint:', error);
+    
     return res.status(500).json({
-      error: 'Server error',
-      message: error.message
+      error: 'Failed to list calendars',
+      message: error.message,
+      details: error.stack
     });
   }
 });
