@@ -413,6 +413,30 @@ app.delete('/api/delete-event', async (req, res) => {
       
       console.log(`Attempting to delete event ${eventId} from calendar: ${calendarId}`);
       
+      // First verify the event exists and we have access
+      try {
+        await calendar.events.get({
+          calendarId,
+          eventId
+        });
+      } catch (error) {
+        if (error.code === 404) {
+          return res.status(404).json({
+            error: 'Event not found',
+            message: 'The specified event does not exist or has already been deleted.'
+          });
+        }
+        if (error.code === 403) {
+          return res.status(403).json({
+            error: 'Permission denied',
+            message: 'Service account does not have permission to delete this event. Please ensure the service account has the necessary permissions.',
+            details: error.message
+          });
+        }
+        throw error;
+      }
+      
+      // If we get here, we have access and the event exists
       await calendar.events.delete({
         calendarId,
         eventId
@@ -426,7 +450,8 @@ app.delete('/api/delete-event', async (req, res) => {
       console.error('Calendar delete access failed:', error);
       return res.status(500).json({
         error: 'Failed to delete event',
-        message: error.message
+        message: error.message,
+        details: error.stack
       });
     }
   } catch (error) {
@@ -467,20 +492,29 @@ app.post('/api/move-event', async (req, res) => {
     
     // First verify access to both calendars
     try {
+      // Verify source calendar access
       await calendar.calendars.get({ calendarId });
+      
+      // Verify destination calendar access
       await calendar.calendars.get({ calendarId: destinationCalendarId });
+      
+      // Verify event exists and we have access
+      await calendar.events.get({
+        calendarId,
+        eventId
+      });
     } catch (error) {
       if (error.code === 404) {
         return res.status(404).json({
-          error: 'Calendar not found',
-          message: 'One or both calendars were not found. Please verify the calendar IDs.',
+          error: 'Resource not found',
+          message: 'One or more resources (calendar or event) were not found. Please verify the IDs.',
           details: error.message
         });
       }
       if (error.code === 403) {
         return res.status(403).json({
           error: 'Permission denied',
-          message: 'Service account does not have access to one or both calendars. Please ensure the service account has the necessary permissions.',
+          message: 'Service account does not have access to one or more resources. Please ensure the service account has the necessary permissions.',
           details: error.message
         });
       }
