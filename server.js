@@ -376,7 +376,7 @@ app.post('/api/delete-event', handleDeleteEvent);
 
 async function handleDeleteEvent(req, res) {
   try {
-    const { 
+    let { 
       calendarId = DEFAULT_CALENDAR_ID,
       eventId 
     } = req.body;
@@ -416,42 +416,137 @@ async function handleDeleteEvent(req, res) {
       
       console.log(`Attempting to delete event ${eventId} from calendar: ${calendarId}`);
       
-      // First verify the event exists and we have access
+      // First verify the calendar exists and we have access
       try {
-        await calendar.events.get({
-          calendarId,
-          eventId
-        });
+        await calendar.calendars.get({ calendarId });
+        console.log(`Verified access to calendar: ${calendarId}`);
       } catch (error) {
         if (error.code === 404) {
           return res.status(404).json({
-            error: 'Event not found',
-            message: 'The specified event does not exist or has already been deleted.'
+            error: 'Calendar not found',
+            message: 'The specified calendar does not exist or is not accessible.'
           });
         }
         if (error.code === 403) {
           return res.status(403).json({
             error: 'Permission denied',
-            message: 'Service account does not have permission to delete this event. Please ensure the service account has the necessary permissions.',
+            message: 'Service account does not have permission to access this calendar.',
             details: error.message
           });
         }
         throw error;
       }
       
-      // If we get here, we have access and the event exists
-      await calendar.events.delete({
-        calendarId,
-        eventId,
-        sendUpdates: 'all' // Send updates to all attendees
-      });
+      // Try to find the event in the specified calendar
+      let eventExists = false;
+      try {
+        await calendar.events.get({
+          calendarId,
+          eventId
+        });
+        console.log(`Found event ${eventId} in calendar ${calendarId}`);
+        eventExists = true;
+      } catch (error) {
+        if (error.code === 404 || error.message.includes('Resource has been deleted')) {
+          // Event not found in specified calendar, try to find it in other calendars
+          console.log(`Event ${eventId} not found in calendar ${calendarId}, searching other calendars...`);
+          
+          try {
+            // List all calendars we have access to
+            const calendarList = await calendar.calendarList.list();
+            
+            // Search for the event in each calendar
+            for (const cal of calendarList.data.items) {
+              try {
+                await calendar.events.get({
+                  calendarId: cal.id,
+                  eventId
+                });
+                console.log(`Found event ${eventId} in calendar ${cal.id}`);
+                // Update calendarId to the one where we found the event
+                calendarId = cal.id;
+                eventExists = true;
+                break;
+              } catch (e) {
+                if (e.code !== 404 && !e.message.includes('Resource has been deleted')) {
+                  throw e;
+                }
+              }
+            }
+            
+            if (!eventExists) {
+              return res.status(200).json({
+                success: true,
+                message: 'Event was already deleted'
+              });
+            }
+          } catch (searchError) {
+            if (searchError.message.includes('Resource has been deleted')) {
+              return res.status(200).json({
+                success: true,
+                message: 'Event was already deleted'
+              });
+            }
+            return res.status(404).json({
+              error: 'Event not found',
+              message: 'The specified event does not exist in any accessible calendar.',
+              details: searchError.message
+            });
+          }
+        } else if (error.message.includes('Resource has been deleted')) {
+          return res.status(200).json({
+            success: true,
+            message: 'Event was already deleted'
+          });
+        } else {
+          throw error;
+        }
+      }
       
-      return res.status(200).json({ 
-        success: true,
-        message: 'Event deleted successfully'
-      });
+      // If we get here and eventExists is false, the event was already deleted
+      if (!eventExists) {
+        return res.status(200).json({
+          success: true,
+          message: 'Event was already deleted'
+        });
+      }
+      
+      // If we get here, we have access and the event exists
+      console.log(`Attempting to delete event ${eventId} from calendar ${calendarId}`);
+      
+      try {
+        await calendar.events.delete({
+          calendarId,
+          eventId,
+          sendUpdates: 'all' // Send updates to all attendees
+        });
+        
+        console.log(`Successfully deleted event ${eventId} from calendar ${calendarId}`);
+        
+        return res.status(200).json({ 
+          success: true,
+          message: 'Event deleted successfully'
+        });
+      } catch (deleteError) {
+        if (deleteError.message.includes('Resource has been deleted')) {
+          console.log(`Event ${eventId} was already deleted`);
+          return res.status(200).json({
+            success: true,
+            message: 'Event was already deleted'
+          });
+        }
+        throw deleteError;
+      }
     } catch (error) {
       console.error('Calendar delete access failed:', error);
+      
+      if (error.message.includes('Resource has been deleted')) {
+        return res.status(200).json({
+          success: true,
+          message: 'Event was already deleted'
+        });
+      }
+      
       return res.status(500).json({
         error: 'Failed to delete event',
         message: error.message,
