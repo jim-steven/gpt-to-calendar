@@ -439,7 +439,8 @@ app.delete('/api/delete-event', async (req, res) => {
       // If we get here, we have access and the event exists
       await calendar.events.delete({
         calendarId,
-        eventId
+        eventId,
+        sendUpdates: 'all' // Send updates to all attendees
       });
       
       return res.status(200).json({ 
