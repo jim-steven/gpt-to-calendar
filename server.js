@@ -14,7 +14,7 @@ const axios = require('axios');
 require("dotenv").config();
 
 // Define calendar constants
-const DEFAULT_CALENDAR_ID = '722fa8effd25a02bfdebfb2fcb8046e6380a014ff11b31fce8f08336f0d629b1@group.calendar.google.com'; // Use the specific calendar ID
+const DEFAULT_CALENDAR_ID = '865d9be49c7fe3679063400a3796fcb5d38560d6c907e9bbbf77802bc646a4ac@group.calendar.google.com'; // Use the specific calendar ID
 
 // Express app setup
 const app = express();
@@ -343,6 +343,147 @@ app.get('/api/status', (req, res) => {
   });
 });
 
+// Delete a calendar event
+app.delete('/api/delete-event', async (req, res) => {
+  try {
+    const { 
+      calendarId = DEFAULT_CALENDAR_ID,
+      eventId 
+    } = req.body;
+    
+    if (!eventId) {
+      return res.status(400).json({ 
+        error: 'Missing required field', 
+        message: 'eventId is required'
+      });
+    }
+    
+    // Try to use service account
+    try {
+      const keyFilePath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH || path.join(__dirname, 'service-account-key.json');
+      
+      // Read the key file directly and parse it
+      let credentials;
+      try {
+        const keyFileContent = fs.readFileSync(keyFilePath, 'utf8');
+        credentials = JSON.parse(keyFileContent);
+        console.log('Successfully loaded credentials from file');
+      } catch (readError) {
+        console.error('Error reading key file:', readError);
+        throw new Error('Could not read service account key file');
+      }
+      
+      // Create auth client directly with credentials
+      const auth = new google.auth.JWT(
+        credentials.client_email || credentials.web?.client_email,
+        null,
+        credentials.private_key || credentials.web?.private_key,
+        ['https://www.googleapis.com/auth/calendar']
+      );
+      
+      // Initialize the calendar API with our authenticated client
+      const calendar = google.calendar({ version: 'v3', auth });
+      
+      console.log(`Attempting to delete event ${eventId} from calendar: ${calendarId}`);
+      
+      await calendar.events.delete({
+        calendarId,
+        eventId
+      });
+      
+      return res.status(200).json({ 
+        success: true,
+        message: 'Event deleted successfully'
+      });
+    } catch (error) {
+      console.error('Calendar delete access failed:', error);
+      return res.status(500).json({
+        error: 'Failed to delete event',
+        message: error.message
+      });
+    }
+  } catch (error) {
+    console.error('Error in delete-event endpoint:', error);
+    return res.status(500).json({
+      error: 'Server error',
+      message: error.message
+    });
+  }
+});
+
+// Move a calendar event
+app.post('/api/move-event', async (req, res) => {
+  try {
+    const { 
+      calendarId = DEFAULT_CALENDAR_ID,
+      eventId,
+      destinationCalendarId,
+      sendUpdates = 'all' // 'all', 'externalOnly', or 'none'
+    } = req.body;
+    
+    if (!eventId || !destinationCalendarId) {
+      return res.status(400).json({ 
+        error: 'Missing required fields', 
+        message: 'eventId and destinationCalendarId are required'
+      });
+    }
+    
+    // Try to use service account
+    try {
+      const keyFilePath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH || path.join(__dirname, 'service-account-key.json');
+      
+      // Read the key file directly and parse it
+      let credentials;
+      try {
+        const keyFileContent = fs.readFileSync(keyFilePath, 'utf8');
+        credentials = JSON.parse(keyFileContent);
+        console.log('Successfully loaded credentials from file');
+      } catch (readError) {
+        console.error('Error reading key file:', readError);
+        throw new Error('Could not read service account key file');
+      }
+      
+      // Create auth client directly with credentials
+      const auth = new google.auth.JWT(
+        credentials.client_email || credentials.web?.client_email,
+        null,
+        credentials.private_key || credentials.web?.private_key,
+        ['https://www.googleapis.com/auth/calendar']
+      );
+      
+      // Initialize the calendar API with our authenticated client
+      const calendar = google.calendar({ version: 'v3', auth });
+      
+      console.log(`Attempting to move event ${eventId} from calendar ${calendarId} to ${destinationCalendarId}`);
+      
+      const response = await calendar.events.move({
+        calendarId,
+        eventId,
+        destination: destinationCalendarId,
+        sendUpdates
+      });
+      
+      return res.status(200).json({ 
+        success: true,
+        message: 'Event moved successfully',
+        event: response.data
+      });
+    } catch (error) {
+      console.error('Calendar move access failed:', error);
+      return res.status(500).json({
+        error: 'Failed to move event',
+        message: error.message
+      });
+    }
+  } catch (error) {
+    console.error('Error in move-event endpoint:', error);
+    return res.status(500).json({
+      error: 'Server error',
+      message: error.message
+    });
+  }
+});
+
 // Add a home page
 app.get('/', (req, res) => {
   res.send(`
@@ -360,7 +501,7 @@ app.get('/', (req, res) => {
       </head>
       <body>
         <h1>GPT-to-Calendar API</h1>
-        <p>This API service allows adding events to Google Calendar directly from ChatGPT.</p>
+        <p>This API service allows managing Google Calendar events directly from ChatGPT.</p>
         
         <div class="api-info">
           <h2>Quick Start</h2>
@@ -376,6 +517,17 @@ app.get('/', (req, res) => {
           <div class="endpoint">
             <h3>GET /api/list-events</h3>
             <p>List upcoming calendar events</p>
+          </div>
+          <div class="endpoint">
+            <h3>DELETE /api/delete-event</h3>
+            <p>Delete a calendar event</p>
+            <p>Required fields: eventId</p>
+          </div>
+          <div class="endpoint">
+            <h3>POST /api/move-event</h3>
+            <p>Move a calendar event to a different calendar</p>
+            <p>Required fields: eventId, destinationCalendarId</p>
+            <p>Optional: sendUpdates ('all', 'externalOnly', or 'none')</p>
           </div>
           <div class="endpoint">
             <h3>GET /api/status</h3>
