@@ -370,8 +370,11 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-// Delete a calendar event
-app.delete('/api/delete-event', async (req, res) => {
+// Delete a calendar event - handle both DELETE and POST methods
+app.delete('/api/delete-event', handleDeleteEvent);
+app.post('/api/delete-event', handleDeleteEvent);
+
+async function handleDeleteEvent(req, res) {
   try {
     const { 
       calendarId = DEFAULT_CALENDAR_ID,
@@ -462,7 +465,7 @@ app.delete('/api/delete-event', async (req, res) => {
       message: error.message
     });
   }
-});
+}
 
 // Move a calendar event
 app.post('/api/move-event', async (req, res) => {
